@@ -164,55 +164,62 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
     else:
         status = '<div class="status wait">No data yet — odds and xG previews typically appear 6–12 h before kickoff</div>'
 
-    # ── Soccer: one section per league ───────────────────────────────────────
+    # ── Soccer: one section per league, edge-first within each ───────────────
     soccer_by_league: dict[str, list[AggregatedPick]] = {}
     for a in soccer_aggs:
         soccer_by_league.setdefault(a.league or a.sport.value, []).append(a)
 
-    soccer_parts = []
+    all_sections: list[tuple[str, str]] = []  # (id, html)
     for league_name in sorted(soccer_by_league):
         league_picks = sorted(soccer_by_league[league_name], key=lambda a: (
-            a.game_time.strftime("%Y-%m-%d"),
-            -_EDGE_PRIORITY.get(a.edge_flag, 0),
+            -_EDGE_PRIORITY.get(a.edge_flag, 0),   # strong edge first
             -a.composite_score,
+            a.game_time,
         ))
         cards = "\n".join(render_card(a) for a in league_picks)
-        soccer_parts.append(
-            f'<div class="sport-section">'
-            f'<div class="shdr soccer-shdr">{_h.escape(league_name)}</div>'
-            f'{cards}'
+        sid = f"s{len(all_sections)}"
+        all_sections.append((sid, league_name,
+            f'<div class="sport-section" id="{sid}">'
+            f'<div class="shdr soccer-shdr" onclick="toggleAcc(this)">{_h.escape(league_name)}</div>'
+            f'<div class="section-body">{cards}</div>'
             f'</div>'
-        )
+        ))
 
     # ── Entertainment: one section per sport ─────────────────────────────────
     ent_by_sport: dict[str, list[Pick]] = {}
     for p in ent_picks:
         ent_by_sport.setdefault(p.sport.value, []).append(p)
 
-    ent_parts = []
+    has_ent = bool(ent_by_sport)
+    ent_divider_id = f"s{len(all_sections)}" if has_ent else ""
     for sport_name in sorted(ent_by_sport):
         cards = "\n".join(render_entertainment_card(p) for p in ent_by_sport[sport_name])
-        ent_parts.append(
-            f'<div class="sport-section">'
-            f'<div class="shdr ent-shdr">{_h.escape(sport_name)}'
-            f'<span class="shdr-sub"> · entertainment only</span></div>'
-            f'{cards}'
+        sid = f"s{len(all_sections)}"
+        all_sections.append((sid, sport_name,
+            f'<div class="sport-section" id="{sid}">'
+            f'<div class="shdr ent-shdr" onclick="toggleAcc(this)">{_h.escape(sport_name)}'
+            f'<span class="shdr-sub"> · entertainment</span></div>'
+            f'<div class="section-body">{cards}</div>'
             f'</div>'
-        )
+        ))
 
-    if not soccer_parts and not ent_parts:
+    if not all_sections:
         main_html = """<div class="empty">
   <div class="empty-icon">⏳</div>
   <div class="empty-title">Waiting for data</div>
   <div class="empty-sub">Odds and xG previews typically appear 6–12 hours before kickoff.<br>This page refreshes every hour.</div>
 </div>"""
     else:
-        soccer_html = "\n".join(soccer_parts)
-        ent_html = (
-            '<div class="ent-divider">🎰 Entertainment</div>\n' + "\n".join(ent_parts)
-            if ent_parts else ""
-        )
-        main_html = "\n".join(filter(None, [soccer_html, ent_html]))
+        parts = []
+        for i, (sid, label, html) in enumerate(all_sections):
+            if sid == ent_divider_id:
+                parts.append('<div class="ent-divider" id="ent-div">🎰 Entertainment</div>')
+            parts.append(html)
+        main_html = "\n".join(parts)
+
+    # Build JS arrays for section IDs and labels
+    js_ids    = "[" + ",".join(f'"{s[0]}"' for s in all_sections) + "]"
+    js_labels = "[" + ",".join(f'"{_h.escape(s[1])}"' for s in all_sections) + "]"
 
     log_section = f"""<details>
   <summary>Fetch log</summary>
@@ -230,29 +237,69 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
     body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
           background:#0a0a0a;color:#e5e7eb;padding:16px 14px;min-height:100vh}}
     h1{{font-size:1.1em;font-weight:700;color:#f9fafb}}
-    .updated{{font-size:0.70em;color:#6b7280;margin-top:3px;margin-bottom:14px}}
-    .status{{font-size:0.75em;font-weight:600;margin-bottom:14px;padding:8px 12px;
+    .updated{{font-size:0.70em;color:#6b7280;margin-top:3px;margin-bottom:8px}}
+    .status{{font-size:0.75em;font-weight:600;margin-bottom:10px;padding:8px 12px;
              border-radius:8px}}
     .status.ok{{background:#052e16;color:#4ade80}}
     .status.wait{{background:#111827;color:#9ca3af}}
 
-    .sport-section{{margin-bottom:24px}}
+    /* ── Mode switcher ── */
+    .mode-bar{{display:flex;gap:6px;margin-bottom:10px}}
+    .mode-btn{{font-size:0.65em;padding:5px 13px;border-radius:20px;
+               border:1px solid #2d2d2d;background:#111;color:#6b7280;cursor:pointer}}
+    .mode-btn.active{{background:#1e3a5f;color:#60a5fa;border-color:#2563eb}}
+
+    /* ── Jump nav (scroll mode) ── */
+    #jump-nav{{display:none;overflow-x:auto;white-space:nowrap;
+               margin-bottom:12px;padding-bottom:2px;
+               -webkit-overflow-scrolling:touch;scrollbar-width:none}}
+    #jump-nav::-webkit-scrollbar{{display:none}}
+    body.mode-scroll #jump-nav{{display:flex;gap:6px}}
+    .jnav-a{{font-size:0.65em;padding:4px 10px;border-radius:20px;
+             border:1px solid #222;background:#111;color:#6b7280;
+             text-decoration:none;white-space:nowrap;flex-shrink:0}}
+
+    /* ── Tab bar (tabs mode) ── */
+    #tab-bar{{display:none;overflow-x:auto;white-space:nowrap;gap:5px;
+              margin-bottom:12px;-webkit-overflow-scrolling:touch;scrollbar-width:none}}
+    #tab-bar::-webkit-scrollbar{{display:none}}
+    body.mode-tabs #tab-bar{{display:flex}}
+    .tab-btn{{font-size:0.65em;padding:5px 11px;border-radius:6px;
+              border:1px solid #222;background:#111;color:#6b7280;
+              cursor:pointer;white-space:nowrap;flex-shrink:0}}
+    .tab-btn.active{{background:#0f1f3d;color:#60a5fa;border-color:#1e3a5f}}
+
+    /* ── Tabs mode ── */
+    body.mode-tabs .sport-section{{display:none}}
+    body.mode-tabs .sport-section.tab-active{{display:block}}
+    body.mode-tabs .ent-divider{{display:none}}
+
+    /* ── Accordion mode ── */
+    body.mode-accordion .shdr{{cursor:pointer;user-select:none;
+                               display:flex;justify-content:space-between;align-items:center}}
+    body.mode-accordion .shdr::after{{content:"›";font-size:1.2em;
+                                      font-weight:400;opacity:0.6;
+                                      transition:transform .2s;display:block}}
+    body.mode-accordion .sport-section.open>.shdr::after{{transform:rotate(90deg)}}
+    body.mode-accordion .section-body{{display:none}}
+    body.mode-accordion .sport-section.open>.section-body{{display:block}}
+
+    /* ── Sections ── */
+    .sport-section{{margin-bottom:20px}}
     .shdr{{font-size:0.8em;font-weight:700;text-transform:uppercase;
-           letter-spacing:0.1em;padding:7px 12px;border-radius:8px;
+           letter-spacing:0.1em;padding:8px 12px;border-radius:8px;
            margin-bottom:10px}}
     .soccer-shdr{{background:#0f1f3d;color:#60a5fa;border:1px solid #1e3a5f}}
     .ent-shdr{{background:#111;color:#6b7280;border:1px solid #1f1f1f}}
-    .shdr-sub{{font-size:0.75em;font-weight:400;letter-spacing:0.02em;color:#4b5563}}
-
+    .shdr-sub{{font-size:0.72em;font-weight:400;letter-spacing:0.02em;color:#4b5563}}
     .ent-divider{{font-size:0.72em;font-weight:600;color:#4b5563;
                   text-transform:uppercase;letter-spacing:0.1em;
-                  margin:28px 0 16px;padding-top:18px;
-                  border-top:1px solid #1a1a1a}}
+                  margin:24px 0 14px;padding-top:18px;border-top:1px solid #1a1a1a}}
 
+    /* ── Cards ── */
     .card{{background:#141414;border:1px solid #222;border-radius:12px;
            padding:14px;margin-bottom:10px}}
     .ent-card{{background:#0f0f0f;border-color:#1a1a1a}}
-
     .card-top{{display:flex;justify-content:space-between;margin-bottom:8px}}
     .badge{{font-size:0.62em;font-weight:700;text-transform:uppercase;
             letter-spacing:0.07em;padding:2px 7px;border-radius:4px}}
@@ -260,20 +307,16 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
     .badge.market{{background:#1f2937;color:#9ca3af}}
     .game{{font-size:0.92em;font-weight:600;color:#f3f4f6;margin-bottom:2px}}
     .gtime{{font-size:0.67em;color:#6b7280;margin-bottom:10px}}
-
     .row{{display:flex;align-items:center;gap:8px;margin-bottom:8px}}
     .lbl{{font-size:0.63em;color:#6b7280;text-transform:uppercase;
           letter-spacing:0.07em;min-width:62px}}
     .pick{{font-size:0.88em;font-weight:700;color:#f9fafb}}
     .ent-pick{{color:#d1d5db;font-weight:600}}
-
     .score-row .bar-wrap{{flex:1;height:4px;background:#222;border-radius:2px;overflow:hidden}}
     .bar{{height:100%;background:linear-gradient(90deg,#2563eb,#60a5fa);border-radius:2px}}
     .score-num{{font-size:0.68em;color:#9ca3af;min-width:30px;text-align:right}}
-
     .edge-badge{{font-size:0.67em;font-weight:600;padding:3px 9px;border-radius:6px}}
     .stake{{font-size:0.95em;margin-left:auto;letter-spacing:2px}}
-
     .sources{{font-size:0.62em;color:#4b5563;margin-top:4px}}
     .note{{font-size:0.63em;color:#9ca3af;margin-top:7px;font-style:italic;
            border-left:2px solid #1f2937;padding-left:8px;line-height:1.5}}
@@ -283,6 +326,14 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
     .empty-icon{{font-size:2em;margin-bottom:10px}}
     .empty-title{{font-size:0.9em;font-weight:600;color:#9ca3af;margin-bottom:8px}}
     .empty-sub{{font-size:0.75em;color:#4b5563;line-height:1.7}}
+
+    /* ── Past-event filter ── */
+    .past-btn{{margin-left:auto}}
+    .past-btn.active{{background:#1a1a1a;color:#9ca3af;border-color:#374151}}
+    .card.past{{display:none}}
+    .card.past-visible{{display:block!important}}
+    /* hide section when all its cards are hidden */
+    .sport-section.all-past{{display:none!important}}
 
     details{{margin-top:20px}}
     summary{{font-size:0.68em;color:#374151;cursor:pointer;
@@ -296,9 +347,21 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
   <h1>Picks — {date}</h1>
   <div class="updated">Updated {now} · auto-refreshes hourly</div>
   {status}
+  <div class="mode-bar">
+    <button class="mode-btn" data-mode="scroll"     onclick="setMode('scroll')">Scroll</button>
+    <button class="mode-btn" data-mode="tabs"       onclick="setMode('tabs')">Tabs</button>
+    <button class="mode-btn" data-mode="accordion"  onclick="setMode('accordion')">Accordion</button>
+    <button class="mode-btn past-btn" id="past-btn" onclick="togglePast()">Show Past</button>
+  </div>
+  <div id="jump-nav"></div>
+  <div id="tab-bar"></div>
   {main_html}
   {log_section}
   <script>
+    var IDS    = {js_ids};
+    var LABELS = {js_labels};
+
+    /* ── UTC time localisation ── */
     document.querySelectorAll('.gtime[data-utc]').forEach(function(el) {{
       try {{
         var d = new Date(el.dataset.utc);
@@ -306,6 +369,92 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
           ' ' + d.toLocaleTimeString('en-US',{{hour:'numeric',minute:'2-digit'}});
       }} catch(e) {{}}
     }});
+
+    /* ── Past-event filter ── */
+    var showPast = localStorage.getItem('showPast') === '1';
+
+    function markPastCards() {{
+      var now = Date.now();
+      document.querySelectorAll('.card, .ent-card').forEach(function(card) {{
+        var gt = card.querySelector('.gtime[data-utc]');
+        if (gt) {{
+          var t = new Date(gt.dataset.utc).getTime();
+          if (!isNaN(t) && t < now) card.classList.add('past');
+        }}
+      }});
+    }}
+
+    function applyPastFilter() {{
+      var btn = document.getElementById('past-btn');
+      document.querySelectorAll('.card.past, .ent-card.past').forEach(function(c) {{
+        c.classList.toggle('past-visible', showPast);
+      }});
+      btn.classList.toggle('active', showPast);
+      btn.textContent = showPast ? 'Hide Past' : 'Show Past';
+      /* collapse sections where every card is hidden */
+      document.querySelectorAll('.sport-section').forEach(function(sec) {{
+        var cards = sec.querySelectorAll('.card,.ent-card');
+        var allHidden = cards.length > 0 && Array.from(cards).every(function(c) {{
+          return c.classList.contains('past') && !c.classList.contains('past-visible');
+        }});
+        sec.classList.toggle('all-past', allHidden);
+      }});
+    }}
+
+    function togglePast() {{
+      showPast = !showPast;
+      localStorage.setItem('showPast', showPast ? '1' : '0');
+      applyPastFilter();
+    }}
+
+    markPastCards();
+    applyPastFilter();
+
+    /* ── Build jump-nav pills ── */
+    var jnav = document.getElementById('jump-nav');
+    IDS.forEach(function(id, i) {{
+      var a = document.createElement('a');
+      a.className = 'jnav-a'; a.href = '#' + id; a.textContent = LABELS[i];
+      jnav.appendChild(a);
+    }});
+
+    /* ── Build tab buttons ── */
+    var tabBar = document.getElementById('tab-bar');
+    IDS.forEach(function(id, i) {{
+      var b = document.createElement('button');
+      b.className = 'tab-btn'; b.textContent = LABELS[i];
+      b.onclick = function() {{ showTab(i); }};
+      tabBar.appendChild(b);
+    }});
+
+    function showTab(idx) {{
+      IDS.forEach(function(id, i) {{
+        var el = document.getElementById(id);
+        if (el) el.classList.toggle('tab-active', i === idx);
+      }});
+      tabBar.querySelectorAll('.tab-btn').forEach(function(b, i) {{
+        b.classList.toggle('active', i === idx);
+      }});
+    }}
+
+    /* ── Accordion toggle ── */
+    function toggleAcc(shdr) {{
+      if (document.body.classList.contains('mode-accordion'))
+        shdr.parentElement.classList.toggle('open');
+    }}
+
+    /* ── Mode switcher ── */
+    function setMode(mode) {{
+      document.body.className = 'mode-' + mode;
+      localStorage.setItem('picksMode', mode);
+      document.querySelectorAll('.mode-btn').forEach(function(b) {{
+        b.classList.toggle('active', b.dataset.mode === mode);
+      }});
+      if (mode === 'tabs') showTab(0);
+    }}
+
+    /* ── Restore saved mode ── */
+    setMode(localStorage.getItem('picksMode') || 'scroll');
   </script>
 </body>
 </html>"""
