@@ -21,23 +21,31 @@ from config import ACTIVE_SOCCER_LEAGUES
 from engine import aggregator
 from models import MarketType, Pick, PickSide, Sport
 from sources.oddsshark import OddsSharkSource
-from sources.actionnetwork import ActionNetworkSource
 from sources.xgscore import XGScoreSource
 from sources.kalshi import KalshiSource
 
-# BettingPros uses the browser-use agent when ANTHROPIC_API_KEY is available,
-# falling back to the manual-entry stub otherwise.
+# ActionNetwork and BettingPros require browser-use / playwright which may not
+# be installed in lightweight environments (e.g. GitHub Actions).
+try:
+    from sources.actionnetwork import ActionNetworkSource
+    _ACTIONNETWORK = ActionNetworkSource()
+except ImportError:
+    _ACTIONNETWORK = None
+
 def _make_bettingpros_source():
     if os.getenv("ANTHROPIC_API_KEY"):
-        from sources.bettingpros_agent import BettingProsAgentSource
-        return BettingProsAgentSource()
+        try:
+            from sources.bettingpros_agent import BettingProsAgentSource
+            return BettingProsAgentSource()
+        except ImportError:
+            pass
     from sources.bettingpros import BettingProsSource
     return BettingProsSource()
 
 _BETTINGPROS = _make_bettingpros_source()
 _XGSCORE = XGScoreSource()
 _KALSHI = KalshiSource()
-_NON_SOCCER_SOURCES = [OddsSharkSource(), _BETTINGPROS, ActionNetworkSource()]
+_NON_SOCCER_SOURCES = [s for s in [OddsSharkSource(), _BETTINGPROS, _ACTIONNETWORK] if s]
 _SOCCER_SOURCES = [_XGSCORE, _KALSHI]
 
 def _sources_for(sport: Sport):

@@ -270,6 +270,7 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
 
 
 def main():
+    db.init_db()
     print(f"Fetching soccer for {DATE}...")
     log = _fetch_log()
     soccer_aggs = _load_soccer_aggs()
