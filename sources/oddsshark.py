@@ -82,6 +82,14 @@ class OddsSharkSource(BaseSource):
         if not home or not away:
             return []
 
+        # Parse actual kickoff time from unix timestamp (UTC)
+        unix_ts = game.get("date")
+        try:
+            from datetime import timezone as _tz
+            game_time = datetime.fromtimestamp(int(unix_ts), tz=_tz.utc).replace(tzinfo=None)
+        except Exception:
+            game_time = date
+
         picks = []
 
         # --- Moneyline: use public vote % as signal ---
@@ -103,7 +111,7 @@ class OddsSharkSource(BaseSource):
                 sport=sport,
                 home_team=home,
                 away_team=away,
-                game_time=date,
+                game_time=game_time,
                 market_type=MarketType.GAME,
                 pick_side=side,
                 pick_team=team,
@@ -133,7 +141,7 @@ class OddsSharkSource(BaseSource):
                     sport=sport,
                     home_team=home,
                     away_team=away,
-                    game_time=date,
+                    game_time=game_time,
                     market_type=MarketType.SPREAD,
                     pick_side=spread_side,
                     pick_team=spread_team,
@@ -162,7 +170,7 @@ class OddsSharkSource(BaseSource):
                 sport=sport,
                 home_team=home,
                 away_team=away,
-                game_time=date,
+                game_time=game_time,
                 market_type=MarketType.TOTAL,
                 pick_side=total_side,
                 line=total_line,

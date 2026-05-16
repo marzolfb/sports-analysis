@@ -108,7 +108,8 @@ def render_card(a: AggregatedPick) -> str:
         sources += f" +{len(a.sources_agreeing)-3}"
     note = _h.escape(a.kalshi_notes[0][:80]) if a.kalshi_notes else ""
 
-    return f"""<div class="card">
+    edge_priority = _EDGE_PRIORITY.get(a.edge_flag, 0)
+    return f"""<div class="card" data-edge="{edge_priority}">
     <div class="card-top">
       <span class="badge league">{_h.escape(league)}</span>
       <span class="badge market">{market}</span>
@@ -139,12 +140,19 @@ def render_entertainment_card(p: Pick) -> str:
     odds_str = f" ({p.raw_odds})" if p.raw_odds else ""
     note = _h.escape(p.notes) if p.notes else ""
 
-    return f"""<div class="card ent-card">
+    if p.game_time and (p.game_time.hour != 0 or p.game_time.minute != 0):
+        utc_iso = p.game_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        gtime_html = f"<div class='gtime' data-utc='{utc_iso}'>{utc_iso}</div>"
+    else:
+        gtime_html = ""
+
+    return f"""<div class="card ent-card" data-edge="0">
     <div class="card-top">
       <span class="badge league">{_h.escape(p.sport.value)}</span>
       <span class="badge market">{market}</span>
     </div>
     <div class="game">{_h.escape(p.away_team)} @ {_h.escape(p.home_team)}</div>
+    {gtime_html}
     <div class="row">
       <span class="lbl">Lean</span>
       <span class="pick ent-pick">{_h.escape(pick_str)}{_h.escape(odds_str)}</span>
@@ -243,11 +251,15 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
     .status.ok{{background:#052e16;color:#4ade80}}
     .status.wait{{background:#111827;color:#9ca3af}}
 
-    /* ── Mode switcher ── */
-    .mode-bar{{display:flex;gap:6px;margin-bottom:10px}}
+    /* ── Mode / sort bar ── */
+    .mode-bar{{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center}}
     .mode-btn{{font-size:0.65em;padding:5px 13px;border-radius:20px;
                border:1px solid #2d2d2d;background:#111;color:#6b7280;cursor:pointer}}
     .mode-btn.active{{background:#1e3a5f;color:#60a5fa;border-color:#2563eb}}
+    .bar-sep{{color:#374151;font-size:0.7em;padding:0 2px}}
+    .sort-btn{{font-size:0.65em;padding:5px 11px;border-radius:20px;
+               border:1px solid #2d2d2d;background:#111;color:#6b7280;cursor:pointer}}
+    .sort-btn.active{{background:#1a2d1a;color:#4ade80;border-color:#166534}}
 
     /* ── Jump nav (scroll mode) ── */
     #jump-nav{{display:none;overflow-x:auto;white-space:nowrap;
@@ -348,9 +360,12 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
   <div class="updated">Updated {now} · auto-refreshes hourly</div>
   {status}
   <div class="mode-bar">
-    <button class="mode-btn" data-mode="scroll"     onclick="setMode('scroll')">Scroll</button>
-    <button class="mode-btn" data-mode="tabs"       onclick="setMode('tabs')">Tabs</button>
-    <button class="mode-btn" data-mode="accordion"  onclick="setMode('accordion')">Accordion</button>
+    <button class="mode-btn" data-mode="scroll"    onclick="setMode('scroll')">Scroll</button>
+    <button class="mode-btn" data-mode="tabs"      onclick="setMode('tabs')">Tabs</button>
+    <button class="mode-btn" data-mode="accordion" onclick="setMode('accordion')">Accordion</button>
+    <span class="bar-sep">·</span>
+    <button class="sort-btn" data-sort="edge" onclick="setSort('edge')">◆ Edge</button>
+    <button class="sort-btn" data-sort="time" onclick="setSort('time')">⏱ Time</button>
     <button class="mode-btn past-btn" id="past-btn" onclick="togglePast()">Show Past</button>
   </div>
   <div id="jump-nav"></div>
@@ -369,6 +384,42 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
           ' ' + d.toLocaleTimeString('en-US',{{hour:'numeric',minute:'2-digit'}});
       }} catch(e) {{}}
     }});
+
+    /* ── Sort ── */
+    var sortMode = localStorage.getItem('picksSort') || 'edge';
+
+    function cardTime(card) {{
+      var gt = card.querySelector('.gtime[data-utc]');
+      return gt ? new Date(gt.dataset.utc).getTime() : Infinity;
+    }}
+    function cardEdge(card) {{
+      return parseInt(card.dataset.edge || '0', 10);
+    }}
+
+    function sortSections() {{
+      document.querySelectorAll('.section-body').forEach(function(body) {{
+        var cards = Array.from(body.children);
+        cards.sort(function(a, b) {{
+          if (sortMode === 'time') {{
+            var dt = cardTime(a) - cardTime(b);
+            return dt !== 0 ? dt : cardEdge(b) - cardEdge(a);
+          }} else {{
+            var de = cardEdge(b) - cardEdge(a);
+            return de !== 0 ? de : cardTime(a) - cardTime(b);
+          }}
+        }});
+        cards.forEach(function(c) {{ body.appendChild(c); }});
+      }});
+    }}
+
+    function setSort(mode) {{
+      sortMode = mode;
+      localStorage.setItem('picksSort', mode);
+      document.querySelectorAll('.sort-btn').forEach(function(b) {{
+        b.classList.toggle('active', b.dataset.sort === mode);
+      }});
+      sortSections();
+    }}
 
     /* ── Past-event filter ── */
     var showPast = localStorage.getItem('showPast') === '1';
@@ -453,8 +504,9 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
       if (mode === 'tabs') showTab(0);
     }}
 
-    /* ── Restore saved mode ── */
+    /* ── Restore saved mode + sort ── */
     setMode(localStorage.getItem('picksMode') || 'scroll');
+    setSort(localStorage.getItem('picksSort') || 'edge');
   </script>
 </body>
 </html>"""
