@@ -137,14 +137,17 @@ class XGScoreSource(BaseSource):
                 if isinstance(data, list):
                     data = next((d for d in data if d.get("@type") == "SportsEvent"), {})
                 if data.get("@type") == "SportsEvent":
-                    competitors = data.get("competitor", [])
-                    for c in competitors:
-                        role = c.get("disambiguatingDescription", "").lower()
-                        name = c.get("name", "")
-                        if "home" in role:
-                            home_team = name
-                        elif "away" in role:
-                            away_team = name
+                    # Schema updated: homeTeam/awayTeam replaced competitor[]
+                    home_team = (data.get("homeTeam") or {}).get("name")
+                    away_team = (data.get("awayTeam") or {}).get("name")
+                    # Legacy format fallback
+                    if not home_team or not away_team:
+                        for c in data.get("competitor", []):
+                            role = c.get("disambiguatingDescription", "").lower()
+                            if "home" in role:
+                                home_team = c.get("name")
+                            elif "away" in role:
+                                away_team = c.get("name")
                     game_time_str = data.get("startDate")
                     break
             except Exception:
@@ -154,30 +157,30 @@ class XGScoreSource(BaseSource):
             # Fallback: parse from URL slug (e.g. /epl/arsenal-chelsea/preview)
             parts = url.rstrip("/").split("/")
             if len(parts) >= 2:
-                matchup = parts[-2]  # "arsenal-chelsea"
+                matchup = parts[-2]
                 teams = matchup.split("-")
                 mid = len(teams) // 2
                 home_team = " ".join(t.title() for t in teams[:mid]) if mid else matchup
                 away_team = " ".join(t.title() for t in teams[mid:]) if mid else matchup
 
-        # Verify the match date if we have game_time_str
-        target_date = date.strftime("%Y-%m-%d")
-        if game_time_str and target_date not in game_time_str:
-            return None  # wrong date — skip
+        # Date check: accept ±1 day to handle UTC vs local timezone offset
+        if game_time_str:
+            from datetime import timedelta
+            target_dates = {
+                (date + timedelta(d)).strftime("%Y-%m-%d") for d in (-1, 0, 1)
+            }
+            if not any(d in game_time_str for d in target_dates):
+                return None  # clearly a different date — skip
 
-        # Extract xG predictions from page text
+        # Extract xG predictions from page text.
+        # xgscore renders concatenated values e.g. "Match Score Prediction 1.81.2"
+        # where 1.8 = home xG and 1.2 = away xG.
         page_text = soup.get_text()
         home_xg = away_xg = None
-        m = re.search(r'Match Score Prediction\s+([\d.]+)\s+([\d.]+)', page_text)
+        m = re.search(r'Match Score Prediction\s+(\d+\.\d+)(\d+\.\d+)', page_text)
         if m:
             home_xg = float(m.group(1))
             away_xg = float(m.group(2))
-        else:
-            # Alternative pattern: "xG: 1.5 - 1.2" or similar
-            m2 = re.search(r'xG[:\s]+([\d.]+)\s*[-–]\s*([\d.]+)', page_text)
-            if m2:
-                home_xg = float(m2.group(1))
-                away_xg = float(m2.group(2))
 
         if home_xg is None or away_xg is None:
             print(f"[xgscore] could not extract xG from {url}")
