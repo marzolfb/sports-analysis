@@ -43,7 +43,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/cache
-          key: source-cache-${{ steps.date.outputs.today }}
+          key: source-cache-v2-${{ steps.date.outputs.today }}
 
       - name: Write Kalshi private key
         env:
