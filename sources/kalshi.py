@@ -210,17 +210,6 @@ class KalshiSource(BaseSource):
                 return None
             implied_prob = float(yes_price)
 
-            # Parse actual kickoff time from occurrence_datetime
-            game_time = date
-            occ = market.get("occurrence_datetime") or market.get("expected_expiration_time")
-            if occ:
-                try:
-                    game_time = datetime.fromisoformat(
-                        occ.replace("Z", "+00:00")
-                    ).replace(tzinfo=None)
-                except Exception:
-                    pass
-
             # yes_sub_title identifies which team this market resolves for
             pick_team = market.get("yes_sub_title")
             home_team, away_team = self._parse_teams(title)
