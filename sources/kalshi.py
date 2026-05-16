@@ -10,8 +10,16 @@ Auth: Kalshi uses RSA-signed requests (PKCS1v15 + SHA256).
   KALSHI_PRIVATE_KEY_PATH — path to PEM file containing the RSA private key
 
 Signal logic:
-  - yes_price (0–100 cents) is the market's implied probability for a home win.
-  - We emit a HOME pick if yes_price maps to a home-favoured probability, AWAY otherwise.
+  - Each game has three markets: home win, tie, away win.
+  - yes_bid_dollars (0.0–1.0) is the implied probability for that outcome.
+  - We pick the team (home or away) with the highest implied probability,
+    ignoring the TIE market.
+
+API notes (as of 2026):
+  - Query by series_ticker (e.g. KXEPLGAME) rather than timestamp filters.
+  - Filter by occurrence_datetime for the target date (±1 day for UTC offset).
+  - Price fields use _dollars suffix and are already 0.0–1.0 scale.
+  - Volume is in volume_fp (float string), status is "active" not "open".
 
 Cache: daily per-league to avoid repeated API calls on the same day.
 """
@@ -36,18 +44,18 @@ from sources.base import BaseSource
 
 KALSHI_API_BASE = "https://external-api.kalshi.com/trade-api/v2"
 
-# Minimum volume on a market before we treat its price as signal
+# Minimum trading volume before we treat a market's price as signal
 MIN_VOLUME = 50
 
-# Map league names to keywords that appear in Kalshi market titles/tickers
-LEAGUE_KEYWORDS: dict[str, list[str]] = {
-    "EPL":        ["premier league", "epl", "english premier"],
-    "La Liga":    ["la liga", "laliga", "spanish"],
-    "Bundesliga": ["bundesliga", "german"],
-    "Serie A":    ["serie a", "seriea", "italian"],
-    "Ligue 1":    ["ligue 1", "ligue1", "french"],
-    "MLS":        ["mls", "major league soccer"],
-    "Liga MX":    ["liga mx", "ligamx", "mexican"],
+# Kalshi series tickers for each league's game (moneyline) markets
+LEAGUE_SERIES: dict[str, str] = {
+    "EPL":        "KXEPLGAME",
+    "La Liga":    "KXLALIGAGAME",
+    "Bundesliga": "KXBUNDESLIGAGAME",
+    "Serie A":    "KXSERIEAGAME",
+    "Ligue 1":    "KXLIGUE1GAME",
+    "MLS":        "KXMLSGAME",
+    "Liga MX":    "KXLIGAMXGAME",
 }
 
 # Patterns to extract home/away teams from market titles.
@@ -138,32 +146,26 @@ class KalshiSource(BaseSource):
         return picks
 
     def _fetch_markets(self, league_name: str, date: datetime) -> list[dict]:
-        keywords = LEAGUE_KEYWORDS.get(league_name, [])
-        # Fetch open markets closing within the target date window (UTC)
-        min_ts = int(date.replace(tzinfo=timezone.utc).timestamp())
-        max_ts = int((date + timedelta(days=1)).replace(tzinfo=timezone.utc).timestamp())
-
-        params = {
-            "status": "open",
-            "min_close_ts": min_ts,
-            "max_close_ts": max_ts,
-            "limit": 200,
-        }
+        series_ticker = LEAGUE_SERIES.get(league_name)
+        if not series_ticker:
+            return []
 
         try:
-            data = self._get("/markets", params=params)
+            data = self._get("/markets", params={"series_ticker": series_ticker, "limit": 200})
             all_markets = data.get("markets", [])
         except Exception as e:
             print(f"[kalshi] API error for {league_name}: {e}")
             return []
 
-        # Filter to soccer markets for this league
+        # Filter to markets whose game falls on the target date (±1 day for UTC offset).
+        # occurrence_datetime is the scheduled game kick-off in UTC.
+        target_dates = {
+            (date + timedelta(d)).strftime("%Y-%m-%d") for d in (-1, 0, 1)
+        }
         matched = []
         for m in all_markets:
-            title = (m.get("title") or "").lower()
-            ticker = (m.get("ticker") or "").lower()
-            text = title + " " + ticker
-            if any(kw in text for kw in keywords):
+            occ = m.get("occurrence_datetime") or m.get("expected_expiration_time") or ""
+            if any(d in occ for d in target_dates):
                 matched.append(m)
 
         return matched
@@ -188,35 +190,41 @@ class KalshiSource(BaseSource):
     def _market_to_pick(self, market: dict, league_name: str,
                         date: datetime) -> Pick | None:
         try:
+            ticker = market.get("ticker", "")
+            # Skip tie markets — we only pick team outcomes
+            if ticker.endswith("-TIE"):
+                return None
+
             title = market.get("title", "")
-            volume = market.get("volume") or 0
+            volume = float(market.get("volume_fp") or 0)
             if volume < MIN_VOLUME:
                 return None
 
-            # yes_price is in cents (0–100); convert to 0.0–1.0
-            yes_price = market.get("last_price") or market.get("yes_bid")
+            # Prices are in dollars (0.0–1.0 scale) as of 2026 API
+            yes_price = (
+                market.get("last_price_dollars")
+                or market.get("yes_bid_dollars")
+                or market.get("yes_ask_dollars")
+            )
             if yes_price is None:
                 return None
-            implied_home = yes_price / 100.0
+            implied_prob = float(yes_price)
 
+            # yes_sub_title identifies which team this market resolves for
+            pick_team = market.get("yes_sub_title")
             home_team, away_team = self._parse_teams(title)
             if not home_team or not away_team:
                 print(f"[kalshi] could not parse teams from: {title!r}")
                 return None
 
-            # yes = home win; no = away win
-            if implied_home >= 0.50:
-                side = PickSide.HOME
-                team = home_team
-                implied_prob = implied_home
-            else:
-                side = PickSide.AWAY
-                team = away_team
-                implied_prob = 1.0 - implied_home
+            if not pick_team:
+                pick_team = home_team if implied_prob >= 0.5 else away_team
 
+            side = PickSide.HOME if pick_team == home_team else PickSide.AWAY
+
+            price_pct = int(implied_prob * 100)
             notes = (
-                f"Kalshi: {league_name} | {title} | "
-                f"home-win price {yes_price}¢ | vol {volume:,}"
+                f"Kalshi: {league_name} | {pick_team} win {price_pct}¢ | vol {int(volume):,}"
             )
 
             return Pick(
@@ -227,9 +235,9 @@ class KalshiSource(BaseSource):
                 game_time=date,
                 market_type=MarketType.GAME,
                 pick_side=side,
-                pick_team=team,
+                pick_team=pick_team,
                 implied_prob=implied_prob,
-                raw_odds=str(yes_price),
+                raw_odds=str(price_pct),
                 notes=notes,
                 fetched_at=datetime.utcnow(),
                 league=league_name,
