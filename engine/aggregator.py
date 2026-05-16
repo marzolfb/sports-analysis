@@ -50,8 +50,12 @@ def aggregate(picks: list[Pick]) -> list[AggregatedPick]:
         agreeing_sources = [p.source for p in side_picks[dominant_side]]
         disagreeing_sources = [p.source for p in group if p.source not in agreeing_sources]
 
-        # Representative pick for metadata
-        rep = side_picks[dominant_side][0]
+        # Representative pick: prefer one with a specific (non-midnight) kickoff time
+        candidates = side_picks[dominant_side]
+        rep = next(
+            (p for p in candidates if p.game_time.hour != 0 or p.game_time.minute != 0),
+            candidates[0],
+        )
 
         # Average implied prob across agreeing picks that have it
         probs = [p.implied_prob for p in side_picks[dominant_side] if p.implied_prob]
@@ -71,6 +75,7 @@ def aggregate(picks: list[Pick]) -> list[AggregatedPick]:
             sources_disagreeing=list(set(disagreeing_sources)),
         )
 
+        agg.league = getattr(rep, 'league', None)
         agg = edge_filter.apply(agg, implied_prob=avg_prob)
         results.append(agg)
 

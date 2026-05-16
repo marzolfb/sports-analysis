@@ -99,6 +99,12 @@ def upsert_pick(pick: Pick) -> str:
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (game_id, pick.sport, pick.home_team, pick.away_team,
               pick.game_time.isoformat(), getattr(pick, "league", None), now))
+        # Refresh game_time when a more specific (non-midnight) kickoff time arrives
+        if pick.game_time.hour != 0 or pick.game_time.minute != 0:
+            conn.execute("""
+                UPDATE games SET game_time = ?, league = COALESCE(?, league)
+                WHERE id = ? AND game_time LIKE '%T00:00:00'
+            """, (pick.game_time.isoformat(), getattr(pick, "league", None), game_id))
         conn.execute("""
             INSERT INTO picks
               (game_id, source, market_type, pick_side, pick_team, line,
@@ -130,14 +136,18 @@ def save_aggregated(agg: AggregatedPick):
 
 
 def load_picks_for_date(date: str) -> list[dict]:
-    """date: YYYY-MM-DD"""
+    """date: YYYY-MM-DD. Covers ±1 day to handle UTC vs local timezone offset."""
+    from datetime import datetime, timedelta
+    dt = datetime.strptime(date, "%Y-%m-%d")
+    lo = dt.strftime("%Y-%m-%d")
+    hi = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
     with _conn() as conn:
         rows = conn.execute("""
-            SELECT p.*, g.sport, g.home_team, g.away_team, g.game_time
+            SELECT p.*, g.sport, g.home_team, g.away_team, g.game_time, g.league
             FROM picks p JOIN games g ON p.game_id = g.id
-            WHERE g.game_time LIKE ?
+            WHERE g.game_time >= ? AND g.game_time < ?
             ORDER BY g.game_time
-        """, (f"{date}%",)).fetchall()
+        """, (f"{lo}T00:00:00", f"{hi}T00:00:00")).fetchall()
     return [dict(r) for r in rows]
 
 

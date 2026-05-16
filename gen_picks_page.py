@@ -28,6 +28,12 @@ _EDGE = {
     EdgeFlag.NEUTRAL:     ("#374151", "#e5e7eb", "Neutral"),
     EdgeFlag.FADE:        ("#7f1d1d", "#fee2e2", "Fade — Skip"),
 }
+_EDGE_PRIORITY = {
+    EdgeFlag.STRONG_EDGE: 3,
+    EdgeFlag.SLIGHT_EDGE: 2,
+    EdgeFlag.NEUTRAL: 1,
+    EdgeFlag.FADE: 0,
+}
 _MARKET = {"GAME": "Moneyline", "SPREAD": "Spread", "TOTAL": "Total"}
 
 
@@ -58,6 +64,7 @@ def _load_soccer_aggs() -> list[AggregatedPick]:
                 pick_team=r.get("pick_team"), line=r.get("line"),
                 implied_prob=r.get("implied_prob"), confidence=r.get("confidence"),
                 raw_odds=r.get("raw_odds"), notes=r.get("notes"),
+                league=r.get("league"),
             ))
         except Exception:
             continue
@@ -92,7 +99,10 @@ def render_card(a: AggregatedPick) -> str:
     score_pct = int(a.composite_score * 100)
     league = getattr(a, "league", None) or a.sport.value
     try:
-        game_time = a.game_time.strftime("%-I:%M %p")
+        if a.game_time.hour == 0 and a.game_time.minute == 0:
+            game_time = a.game_time.strftime("%-m/%-d")
+        else:
+            game_time = a.game_time.strftime("%-m/%-d %-I:%M %p")
     except Exception:
         game_time = ""
     sources = ", ".join(a.sources_agreeing[:3])
@@ -168,7 +178,35 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
     if rec_aggs:
         count = len(rec_aggs)
         status = f'<div class="status ok">{count} recommendation{"s" if count != 1 else ""} ready</div>'
-        recs_html = "\n".join(render_card(a) for a in rec_aggs)
+
+        # Sort by (day, league, edge priority desc, score desc), then group with headers
+        rec_sorted = sorted(rec_aggs, key=lambda a: (
+            a.game_time.strftime("%Y-%m-%d"),
+            getattr(a, "league", None) or a.sport.value,
+            -_EDGE_PRIORITY.get(a.edge_flag, 0),
+            -a.composite_score,
+        ))
+        recs_parts = []
+        current_group = None
+        for a in rec_sorted:
+            league_name = getattr(a, "league", None) or a.sport.value
+            day_str = a.game_time.strftime("%Y-%m-%d")
+            group = (day_str, league_name)
+            if group != current_group:
+                try:
+                    day_dt = datetime.strptime(day_str, "%Y-%m-%d")
+                    day_label = "Today" if day_str == date else day_dt.strftime("%a %b %-d")
+                except Exception:
+                    day_label = day_str
+                recs_parts.append(
+                    f'<div class="league-header">'
+                    f'<span class="lh-league">{_h.escape(league_name)}</span>'
+                    f'<span class="lh-day">{day_label}</span>'
+                    f'</div>'
+                )
+                current_group = group
+            recs_parts.append(render_card(a))
+        recs_html = "\n".join(recs_parts)
     else:
         status = '<div class="status wait">No edge picks yet — sources haven\'t posted lines yet</div>'
         recs_html = """<div class="empty">
@@ -249,6 +287,12 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
                      margin:20px 0 12px;border-top:1px solid #1a1a1a;padding-top:18px}}
     .section-title{{font-size:0.85em;font-weight:700;color:#9ca3af}}
     .section-sub{{font-size:0.65em;color:#4b5563}}
+
+    .league-header{{display:flex;align-items:baseline;gap:8px;
+                    margin:16px 0 8px;padding-top:14px;border-top:1px solid #1c1c1c}}
+    .lh-league{{font-size:0.78em;font-weight:700;color:#6b7280;text-transform:uppercase;
+                letter-spacing:0.08em}}
+    .lh-day{{font-size:0.65em;color:#374151;margin-left:4px}}
 
     details{{margin-top:20px}}
     summary{{font-size:0.68em;color:#374151;cursor:pointer;

@@ -227,6 +227,16 @@ class XGScoreSource(BaseSource):
             away_xg = float(m["away_xg"])
             league_name = m.get("league")
 
+            game_time = date
+            game_time_str = m.get("game_time_str")
+            if game_time_str:
+                try:
+                    game_time = datetime.fromisoformat(
+                        game_time_str.replace("Z", "+00:00")
+                    ).replace(tzinfo=None)
+                except Exception:
+                    pass
+
             xg_diff = home_xg - away_xg
             if abs(xg_diff) < XG_EDGE_THRESHOLD:
                 return None
@@ -249,7 +259,7 @@ class XGScoreSource(BaseSource):
                 sport=Sport.SOCCER,
                 home_team=home,
                 away_team=away,
-                game_time=date,
+                game_time=game_time,
                 market_type=MarketType.GAME,
                 pick_side=side,
                 pick_team=team,

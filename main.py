@@ -19,7 +19,7 @@ from tabulate import tabulate
 import db
 from config import ACTIVE_SOCCER_LEAGUES
 from engine import aggregator
-from models import MarketType, Pick, PickSide, Sport
+from models import EdgeFlag, MarketType, Pick, PickSide, Sport
 from sources.oddsshark import OddsSharkSource
 from sources.xgscore import XGScoreSource
 from sources.kalshi import KalshiSource
@@ -189,6 +189,7 @@ def recommend(date, sport):
                 confidence=r.get("confidence"),
                 raw_odds=r.get("raw_odds"),
                 notes=r.get("notes"),
+                league=r.get("league"),
             ))
         except Exception:
             continue
@@ -232,22 +233,47 @@ def stats():
     click.echo(tabulate(table, headers=["Source", "Market", "Total", "Wins", "Win%"], tablefmt="rounded_grid"))
 
 
+_EDGE_PRIORITY = {
+    EdgeFlag.STRONG_EDGE: 3,
+    EdgeFlag.SLIGHT_EDGE: 2,
+    EdgeFlag.NEUTRAL: 1,
+    EdgeFlag.FADE: 0,
+}
+
+
 def _print_aggregated(aggs):
     if not aggs:
         click.echo("No aggregated picks.")
         return
 
+    sorted_aggs = sorted(aggs, key=lambda a: (
+        a.game_time.strftime("%Y-%m-%d"),
+        a.league or a.sport.value,
+        -_EDGE_PRIORITY.get(a.edge_flag, 0),
+        -a.composite_score,
+    ))
+
     table = []
-    for a in aggs:
+    current_group = None
+    for a in sorted_aggs:
+        group = (a.game_time.strftime("%Y-%m-%d"), a.league or a.sport.value)
+        if group != current_group:
+            if current_group is not None:
+                table.append([""] * 10)
+            current_group = group
+
         game = f"{a.away_team} @ {a.home_team}"
-        pick_str = f"{a.pick_side.value}"
-        if a.pick_team:
-            pick_str = a.pick_team
+        pick_str = a.pick_team or a.pick_side.value
         stake_str = "★" * a.recommended_stake_level if a.recommended_stake_level > 0 else "skip"
         sources_str = ",".join(a.sources_agreeing)
         notes_preview = a.kalshi_notes[0] if a.kalshi_notes else ""
+        try:
+            kickoff = a.game_time.strftime("%-m/%-d %-I:%M%p")
+        except Exception:
+            kickoff = a.game_time.strftime("%m/%d %H:%M")
         table.append([
-            a.sport.value,
+            a.league or a.sport.value,
+            kickoff,
             game,
             a.market_type.value,
             pick_str,
@@ -255,12 +281,12 @@ def _print_aggregated(aggs):
             a.edge_flag.value,
             stake_str,
             f"{a.source_count} ({sources_str})",
-            notes_preview[:60],
+            notes_preview[:55],
         ])
 
     click.echo(tabulate(
         table,
-        headers=["Sport","Game","Market","Pick","Score","Edge","Stake","Sources","Note"],
+        headers=["League","Kickoff","Game","Market","Pick","Score","Edge","Stake","Sources","Note"],
         tablefmt="rounded_grid",
     ))
 
