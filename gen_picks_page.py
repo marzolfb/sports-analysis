@@ -98,13 +98,11 @@ def render_card(a: AggregatedPick) -> str:
     stake_color = "#fbbf24" if a.recommended_stake_level > 0 else "#6b7280"
     score_pct = int(a.composite_score * 100)
     league = getattr(a, "league", None) or a.sport.value
-    try:
-        if a.game_time.hour == 0 and a.game_time.minute == 0:
-            game_time = a.game_time.strftime("%-m/%-d")
-        else:
-            game_time = a.game_time.strftime("%-m/%-d %-I:%M %p")
-    except Exception:
-        game_time = ""
+    if a.game_time.hour == 0 and a.game_time.minute == 0:
+        gtime_html = f"<div class='gtime'>{a.game_time.strftime('%-m/%-d')}</div>"
+    else:
+        utc_iso = a.game_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        gtime_html = f"<div class='gtime' data-utc='{utc_iso}'>{utc_iso}</div>"
     sources = ", ".join(a.sources_agreeing[:3])
     if len(a.sources_agreeing) > 3:
         sources += f" +{len(a.sources_agreeing)-3}"
@@ -116,7 +114,7 @@ def render_card(a: AggregatedPick) -> str:
       <span class="badge market">{market}</span>
     </div>
     <div class="game">{_h.escape(a.away_team)} @ {_h.escape(a.home_team)}</div>
-    {"<div class='gtime'>" + game_time + "</div>" if game_time else ""}
+    {gtime_html}
     <div class="row">
       <span class="lbl">Pick</span>
       <span class="pick">{_h.escape(pick_str)}</span>
@@ -300,6 +298,15 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
   {status}
   {main_html}
   {log_section}
+  <script>
+    document.querySelectorAll('.gtime[data-utc]').forEach(function(el) {{
+      try {{
+        var d = new Date(el.dataset.utc);
+        el.textContent = d.toLocaleDateString('en-US',{{month:'numeric',day:'numeric'}}) +
+          ' ' + d.toLocaleTimeString('en-US',{{hour:'numeric',minute:'2-digit'}});
+      }} catch(e) {{}}
+    }});
+  </script>
 </body>
 </html>"""
 

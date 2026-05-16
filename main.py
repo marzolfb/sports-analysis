@@ -268,7 +268,9 @@ def _print_aggregated(aggs):
         sources_str = ",".join(a.sources_agreeing)
         notes_preview = a.kalshi_notes[0] if a.kalshi_notes else ""
         try:
-            kickoff = a.game_time.strftime("%-m/%-d %-I:%M%p")
+            from datetime import timezone as _tz
+            local = a.game_time.replace(tzinfo=_tz.utc).astimezone()
+            kickoff = local.strftime("%-m/%-d %-I:%M%p")
         except Exception:
             kickoff = a.game_time.strftime("%m/%d %H:%M")
         table.append([
