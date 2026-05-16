@@ -1,0 +1,59 @@
+name: Fetch Picks
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # every hour
+  workflow_dispatch:        # manual trigger from GitHub UI
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  fetch-and-publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-actions.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-actions.txt
+
+      - name: Write Kalshi private key
+        env:
+          KALSHI_PRIVATE_KEY: ${{ secrets.KALSHI_PRIVATE_KEY }}
+        run: |
+          echo "$KALSHI_PRIVATE_KEY" > /tmp/kalshi.pem
+          chmod 600 /tmp/kalshi.pem
+
+      - name: Generate picks page
+        env:
+          KALSHI_API_KEY_ID: ${{ secrets.KALSHI_API_KEY_ID }}
+          KALSHI_PRIVATE_KEY_PATH: /tmp/kalshi.pem
+        run: python gen_picks_page.py
+
+      - name: Prepare Pages artifact
+        run: |
+          mkdir -p _site
+          cp picks.html _site/index.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - uses: actions/deploy-pages@v4
+        id: deploy

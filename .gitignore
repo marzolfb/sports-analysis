@@ -1,0 +1,12 @@
+data/picks.db
+data/cache/
+__pycache__/
+*.pyc
+.env
+*.pem
+*.ipynb_checkpoints/
+agent_conversations/
+picks.html
+picks_mock.html
+cron.log
+httpd.log
