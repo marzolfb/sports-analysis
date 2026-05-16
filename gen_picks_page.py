@@ -158,77 +158,68 @@ def render_entertainment_card(p: Pick) -> str:
 def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: str, date: str = DATE) -> str:
     now = datetime.now().strftime("%b %-d, %-I:%M %p")
 
-    # Soccer: split into edge recs vs FADE (entertainment only)
-    rec_aggs = [a for a in soccer_aggs if a.recommended_stake_level > 0]
-    soccer_fade = [a for a in soccer_aggs if a.recommended_stake_level == 0]
+    rec_count = sum(1 for a in soccer_aggs if a.recommended_stake_level > 0)
+    if rec_count:
+        status = f'<div class="status ok">{rec_count} edge pick{"s" if rec_count != 1 else ""} today</div>'
+    elif soccer_aggs:
+        status = '<div class="status wait">No edge picks — sources loaded but nothing in the sweet spot</div>'
+    else:
+        status = '<div class="status wait">No data yet — odds and xG previews typically appear 6–12 h before kickoff</div>'
 
-    # Convert FADE soccer aggs to lightweight Pick-like objects for the entertainment renderer
-    fade_picks: list[Pick] = []
-    for a in soccer_fade:
-        fade_picks.append(Pick(
-            source="soccer", sport=a.sport,
-            home_team=a.home_team, away_team=a.away_team,
-            game_time=a.game_time, market_type=a.market_type,
-            pick_side=a.pick_side, pick_team=a.pick_team,
-            notes=a.kalshi_notes[0] if a.kalshi_notes else None,
-        ))
+    # ── Soccer: one section per league ───────────────────────────────────────
+    soccer_by_league: dict[str, list[AggregatedPick]] = {}
+    for a in soccer_aggs:
+        soccer_by_league.setdefault(a.league or a.sport.value, []).append(a)
 
-    all_ent = fade_picks + ent_picks
-
-    if rec_aggs:
-        count = len(rec_aggs)
-        status = f'<div class="status ok">{count} recommendation{"s" if count != 1 else ""} ready</div>'
-
-        # Sort by (day, league, edge priority desc, score desc), then group with headers
-        rec_sorted = sorted(rec_aggs, key=lambda a: (
+    soccer_parts = []
+    for league_name in sorted(soccer_by_league):
+        league_picks = sorted(soccer_by_league[league_name], key=lambda a: (
             a.game_time.strftime("%Y-%m-%d"),
-            getattr(a, "league", None) or a.sport.value,
             -_EDGE_PRIORITY.get(a.edge_flag, 0),
             -a.composite_score,
         ))
-        recs_parts = []
-        current_group = None
-        for a in rec_sorted:
-            league_name = getattr(a, "league", None) or a.sport.value
-            day_str = a.game_time.strftime("%Y-%m-%d")
-            group = (day_str, league_name)
-            if group != current_group:
-                try:
-                    day_dt = datetime.strptime(day_str, "%Y-%m-%d")
-                    day_label = "Today" if day_str == date else day_dt.strftime("%a %b %-d")
-                except Exception:
-                    day_label = day_str
-                recs_parts.append(
-                    f'<div class="league-header">'
-                    f'<span class="lh-league">{_h.escape(league_name)}</span>'
-                    f'<span class="lh-day">{day_label}</span>'
-                    f'</div>'
-                )
-                current_group = group
-            recs_parts.append(render_card(a))
-        recs_html = "\n".join(recs_parts)
-    else:
-        status = '<div class="status wait">No edge picks yet — sources haven\'t posted lines yet</div>'
-        recs_html = """<div class="empty">
-      <div class="empty-icon">⏳</div>
-      <div class="empty-title">Waiting for data</div>
-      <div class="empty-sub">Odds and xG previews typically appear 6–12 hours before kickoff.<br>This page refreshes every hour.</div>
-    </div>"""
+        cards = "\n".join(render_card(a) for a in league_picks)
+        soccer_parts.append(
+            f'<div class="sport-section">'
+            f'<div class="shdr soccer-shdr">{_h.escape(league_name)}</div>'
+            f'{cards}'
+            f'</div>'
+        )
 
-    if all_ent:
-        ent_html = "\n".join(render_entertainment_card(p) for p in all_ent)
-        ent_section = f"""<div class="section-header">
-    <span class="section-title">🎰 Just for Fun</span>
-    <span class="section-sub">No edge — bet for entertainment only</span>
-  </div>
-  {ent_html}"""
+    # ── Entertainment: one section per sport ─────────────────────────────────
+    ent_by_sport: dict[str, list[Pick]] = {}
+    for p in ent_picks:
+        ent_by_sport.setdefault(p.sport.value, []).append(p)
+
+    ent_parts = []
+    for sport_name in sorted(ent_by_sport):
+        cards = "\n".join(render_entertainment_card(p) for p in ent_by_sport[sport_name])
+        ent_parts.append(
+            f'<div class="sport-section">'
+            f'<div class="shdr ent-shdr">{_h.escape(sport_name)}'
+            f'<span class="shdr-sub"> · entertainment only</span></div>'
+            f'{cards}'
+            f'</div>'
+        )
+
+    if not soccer_parts and not ent_parts:
+        main_html = """<div class="empty">
+  <div class="empty-icon">⏳</div>
+  <div class="empty-title">Waiting for data</div>
+  <div class="empty-sub">Odds and xG previews typically appear 6–12 hours before kickoff.<br>This page refreshes every hour.</div>
+</div>"""
     else:
-        ent_section = ""
+        soccer_html = "\n".join(soccer_parts)
+        ent_html = (
+            '<div class="ent-divider">🎰 Entertainment</div>\n' + "\n".join(ent_parts)
+            if ent_parts else ""
+        )
+        main_html = "\n".join(filter(None, [soccer_html, ent_html]))
 
     log_section = f"""<details>
-    <summary>Fetch log</summary>
-    <pre>{_h.escape(log)}</pre>
-  </details>""" if log else ""
+  <summary>Fetch log</summary>
+  <pre>{_h.escape(log)}</pre>
+</details>""" if log else ""
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -247,14 +238,27 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
     .status.ok{{background:#052e16;color:#4ade80}}
     .status.wait{{background:#111827;color:#9ca3af}}
 
+    .sport-section{{margin-bottom:24px}}
+    .shdr{{font-size:0.8em;font-weight:700;text-transform:uppercase;
+           letter-spacing:0.1em;padding:7px 12px;border-radius:8px;
+           margin-bottom:10px}}
+    .soccer-shdr{{background:#0f1f3d;color:#60a5fa;border:1px solid #1e3a5f}}
+    .ent-shdr{{background:#111;color:#6b7280;border:1px solid #1f1f1f}}
+    .shdr-sub{{font-size:0.75em;font-weight:400;letter-spacing:0.02em;color:#4b5563}}
+
+    .ent-divider{{font-size:0.72em;font-weight:600;color:#4b5563;
+                  text-transform:uppercase;letter-spacing:0.1em;
+                  margin:28px 0 16px;padding-top:18px;
+                  border-top:1px solid #1a1a1a}}
+
     .card{{background:#141414;border:1px solid #222;border-radius:12px;
-           padding:14px;margin-bottom:12px}}
+           padding:14px;margin-bottom:10px}}
     .ent-card{{background:#0f0f0f;border-color:#1a1a1a}}
 
     .card-top{{display:flex;justify-content:space-between;margin-bottom:8px}}
     .badge{{font-size:0.62em;font-weight:700;text-transform:uppercase;
             letter-spacing:0.07em;padding:2px 7px;border-radius:4px}}
-    .badge.league{{background:transparent;color:#6b7280;padding-left:0}}
+    .badge.league{{background:transparent;color:#4b5563;padding-left:0}}
     .badge.market{{background:#1f2937;color:#9ca3af}}
     .game{{font-size:0.92em;font-weight:600;color:#f3f4f6;margin-bottom:2px}}
     .gtime{{font-size:0.67em;color:#6b7280;margin-bottom:10px}}
@@ -264,7 +268,6 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
           letter-spacing:0.07em;min-width:62px}}
     .pick{{font-size:0.88em;font-weight:700;color:#f9fafb}}
     .ent-pick{{color:#d1d5db;font-weight:600}}
-    .odds{{font-size:0.72em;color:#6b7280;margin-left:auto}}
 
     .score-row .bar-wrap{{flex:1;height:4px;background:#222;border-radius:2px;overflow:hidden}}
     .bar{{height:100%;background:linear-gradient(90deg,#2563eb,#60a5fa);border-radius:2px}}
@@ -283,17 +286,6 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
     .empty-title{{font-size:0.9em;font-weight:600;color:#9ca3af;margin-bottom:8px}}
     .empty-sub{{font-size:0.75em;color:#4b5563;line-height:1.7}}
 
-    .section-header{{display:flex;align-items:baseline;gap:8px;
-                     margin:20px 0 12px;border-top:1px solid #1a1a1a;padding-top:18px}}
-    .section-title{{font-size:0.85em;font-weight:700;color:#9ca3af}}
-    .section-sub{{font-size:0.65em;color:#4b5563}}
-
-    .league-header{{display:flex;align-items:baseline;gap:8px;
-                    margin:16px 0 8px;padding-top:14px;border-top:1px solid #1c1c1c}}
-    .lh-league{{font-size:0.78em;font-weight:700;color:#6b7280;text-transform:uppercase;
-                letter-spacing:0.08em}}
-    .lh-day{{font-size:0.65em;color:#374151;margin-left:4px}}
-
     details{{margin-top:20px}}
     summary{{font-size:0.68em;color:#374151;cursor:pointer;
              text-transform:uppercase;letter-spacing:0.08em;user-select:none}}
@@ -306,8 +298,7 @@ def render_page(soccer_aggs: list[AggregatedPick], ent_picks: list[Pick], log: s
   <h1>Picks — {date}</h1>
   <div class="updated">Updated {now} · auto-refreshes hourly</div>
   {status}
-  {recs_html}
-  {ent_section}
+  {main_html}
   {log_section}
 </body>
 </html>"""
