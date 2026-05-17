@@ -63,7 +63,16 @@ class OddsSharkSource(BaseSource):
                 print(f"[oddsshark] fetch failed: {e}")
                 return []
             games = data.get("scores", [])
-            cache.set(self.name, sport.value, date, json.dumps(games))
+            # Only cache if at least one game has vote data — early morning runs
+            # return all-zero votes and would poison the cache for the whole day.
+            has_votes = any(
+                g.get("teams", {}).get("home", {}).get("votes") or
+                g.get("teams", {}).get("away", {}).get("votes") or
+                g.get("overVotes") or g.get("underVotes")
+                for g in games
+            )
+            if has_votes:
+                cache.set(self.name, sport.value, date, json.dumps(games))
 
         picks = []
         for game in games:
